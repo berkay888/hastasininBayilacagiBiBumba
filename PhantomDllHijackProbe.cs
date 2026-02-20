@@ -32,10 +32,11 @@ using System.Threading;
 class PhantomDllHijackProbe
 {
     const string DLL_TARGET = "TextShaping.dll";
-    const string PROOF_FILE = @"C:\Users\Public\phantom_dll_proof.txt";
-    const string LOG_FILE   = @"C:\Windows\Temp\phantom_dll_log.txt";
+    const string PROOF_FILE = @"C:\Users\Public\phantom_dll_proof.txt"; // DLL PE'sine islenip degistirilemez
     const string WIN_APPS   = @"C:\Program Files\WindowsApps";
 
+    static string LOG_FILE     = null;  // Main'de EXE dizinine gore set edilir
+    static string exeDir       = null;  // EXE'nin bulundugu klasor
     static string tempDllPath  = null;  // uretilen DLL (temizlenecek)
     static string deployedPath = null;  // hedef deploy (temizlenecek)
 
@@ -286,6 +287,10 @@ class PhantomDllHijackProbe
 
     static void Main(string[] args)
     {
+        // EXE klasorunu belirle — tum cikti dosyalari buraya yazilacak
+        exeDir  = AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\', '/');
+        LOG_FILE = Path.Combine(exeDir, "phantom_dll_log.txt");
+
         Console.Title = "PhantomDllHijackProbe v3 - T1574.001 Audit";
         Console.WriteLine("============================================================");
         Console.WriteLine("  T1574.001 - Phantom DLL Hijacking (Audit PoC v3)");
@@ -475,16 +480,18 @@ class PhantomDllHijackProbe
                 "                 CWDIllegalInDllSearch registry politikasini etkinlestir.\r\n" +
                 "============================================================\r\n";
 
-            string reportPath = @"C:\Users\Public\phantom_dll_audit_report.txt";
-            try { File.WriteAllText(reportPath, auditReport); }
-            catch { reportPath = Path.Combine(Path.GetTempPath(), "phantom_dll_audit_report.txt");
-                    File.WriteAllText(reportPath, auditReport); }
+            // Tum cikti dosyalarini EXE klasorune yaz
+            string reportPath = Path.Combine(exeDir, "phantom_dll_audit_report.txt");
+            string localProof = Path.Combine(exeDir, "phantom_dll_proof.txt");
+            try { File.WriteAllText(reportPath, auditReport); } catch { }
+            try { File.Copy(PROOF_FILE, localProof, true); } catch { }
 
             Log("=== ZAFIYET DOGRULANDI ===");
-            Log("Audit raporu: " + reportPath);
+            Log("Audit raporu  : " + reportPath);
+            Log("Kanit kopyasi : " + localProof);
             Console.WriteLine();
             Console.WriteLine(auditReport);
-            Console.WriteLine("[+] Audit raporu kaydedildi: " + reportPath);
+            Console.WriteLine("[+] Dosyalar EXE klasorune kaydedildi: " + exeDir);
         }
         else
         {

